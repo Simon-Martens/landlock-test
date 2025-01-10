@@ -4,9 +4,10 @@
 CC = gcc
 
 # Compiler flags
-CFLAGS = -Wall -Wextra -Wpedantic -O2 -g
+CFLAGS = -Wall -Wextra -Wpedantic -O3 -g
 
-# Linker flags (for Linux Landlock)
+# Linker flags
+# Why are we enabling linux realtime features here?
 LDFLAGS = -lrt
 
 # Source file
