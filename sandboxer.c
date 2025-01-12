@@ -1,4 +1,3 @@
-
 /*
  * Orioginally a sample file fom the linux kernet source tree. Located under
  * samples/landlock/sandboxer.c with the following coyright notice:
@@ -82,24 +81,29 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
   int num_paths, i, ret = 1;
   char *env_path_name;
   const char **path_list = NULL;
+
+  // INFO: This is a kernel struct defined in landlock.h
   struct landlock_path_beneath_attr path_beneath = {
       .parent_fd = -1,
   };
 
   env_path_name = getenv(env_var);
   if (!env_path_name) {
-    /* Prevents users to forget a setting. */
+    // INFO: not setting the env is an error
     fprintf(stderr, "Missing environment variable %s\n", env_var);
     return 1;
   }
   env_path_name = strdup(env_path_name);
+  if (!env_path_name) {
+    fprintf(stderr, "Could not allocat memory for %s\n", env_var);
+    return 1;
+  }
+
   unsetenv(env_var);
   num_paths = parse_path(env_path_name, &path_list);
   if (num_paths == 1 && path_list[0][0] == '\0') {
-    /*
-     * Allows to not use all possible restrictions (e.g. use
-     * LL_FS_RO without LL_FS_RW).
-     */
+    // INFO: we just return if the ruleset is empty. It's not an error.
+    // Then, no access to anything is permitted.
     ret = 0;
     goto out_free_name;
   }
@@ -109,6 +113,11 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
 
     path_beneath.parent_fd = open(path_list[i], O_PATH | O_CLOEXEC);
     if (path_beneath.parent_fd < 0) {
+      // INFO: then again this fails if a single path doesn't exist
+      // The open syscall with O_PATH needs x persmissions on the whole path to
+      // traverse the directory. We should abourt on ENOENT, but maybe not on
+      // EACCES, since an access would be denied anyway; landlock permissions
+      // set or not.
       fprintf(stderr, "Failed to open \"%s\": %s\n", path_list[i],
               strerror(errno));
       goto out_free_name;
@@ -118,6 +127,9 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
       goto out_free_name;
     }
     path_beneath.allowed_access = allowed_access;
+
+    // INFO: Only set flags related to files if the path is a file, everything
+    // else is set to 0
     if (!S_ISDIR(statbuf.st_mode))
       path_beneath.allowed_access &= ACCESS_FILE;
     if (landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &path_beneath,
@@ -282,6 +294,10 @@ int main(const int argc, char *const argv[], char *const *const envp) {
     return 1;
   }
 
+  // INFO: This is a kernel struct defined in landlock.h
+  // We later pass this to landlock_create_ruleset to get a ruleset fd
+  // descriptor. We need to adjust the bitmasks to the features (different
+  // restrictions on fs or net) we wish to handle.
   struct landlock_ruleset_attr ruleset_attr = {
       .handled_access_fs = ACCESS_FS_ROUGHLY_READ | ACCESS_FS_ROUGHLY_WRITE,
       .handled_access_net =
@@ -290,21 +306,26 @@ int main(const int argc, char *const argv[], char *const *const envp) {
 
   configure_landlock(&ruleset_attr);
 
-  // Restrict filesystem permissions based on available ABI features.
   access_fs_ro &= ruleset_attr.handled_access_fs;
   access_fs_rw &= ruleset_attr.handled_access_fs;
 
-  /* Removes bind access attribute if not supported by a user. */
+  // INFO: Network restrictions are optional
   env_port_name = getenv(ENV_TCP_BIND_NAME);
   if (!env_port_name) {
     ruleset_attr.handled_access_net &= ~LANDLOCK_ACCESS_NET_BIND_TCP;
   }
-  /* Removes connect access attribute if not supported by a user. */
   env_port_name = getenv(ENV_TCP_CONNECT_NAME);
   if (!env_port_name) {
     ruleset_attr.handled_access_net &= ~LANDLOCK_ACCESS_NET_CONNECT_TCP;
   }
 
+  // INFO: Syscall to create a new ruleset. The returning fd is used to
+  // append rules to the ruleset.
+  // LANDLOCK_ACCESS_FS_REFER: this right is always denied, even if it's
+  // not declared as handled in the ruleset passed to the kernel below.
+  // Landlock will always deny reparenting of of files between different
+  // directories. Moving files aor linking files to a directory with wider
+  // access rights is always denied.
   ruleset_fd = landlock_create_ruleset(&ruleset_attr, sizeof(ruleset_attr), 0);
   if (ruleset_fd < 0) {
     perror("Failed to create a ruleset");
@@ -337,9 +358,21 @@ int main(const int argc, char *const argv[], char *const *const envp) {
   }
   close(ruleset_fd);
 
+  // INFO: The challenge of this program is that access to the called
+  // executables and shared libraries can't be restricted.
+  // We could
+  // - always retain read access to /lib /bin /usr and /etc
+  // - always retain write access to /tmp, /proc
+  // - retain read access to CWD. Maybe even write access?
+  // - always retain read access to the $PATH directories OR
+  // - try to get the PATH of the currently executed process with `which`
+  // - try to keep default profiles for different executables
   cmd_path = argv[1];
   cmd_argv = argv + 1;
   execvpe(cmd_path, cmd_argv, envp);
+
+  // INFO: This code is unreachable if execvpe is successful
+  // So the programm errs out if it reaches this point.
   fprintf(stderr, "Failed to execute \"%s\": %s\n", cmd_path, strerror(errno));
   fprintf(stderr, "Hint: access to the binary, the interpreter or "
                   "shared libraries may be denied.\n");
