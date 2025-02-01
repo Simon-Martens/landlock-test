@@ -52,6 +52,7 @@
 	LANDLOCK_ACCESS_FS_REFER | \
 	LANDLOCK_ACCESS_FS_TRUNCATE)
 
+// INFO: these only apply to files
 #define ACCESS_FILE ( \
 	LANDLOCK_ACCESS_FS_EXECUTE | \
 	LANDLOCK_ACCESS_FS_WRITE_FILE | \
@@ -83,6 +84,7 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
   const char **path_list = NULL;
 
   // INFO: This is a kernel struct defined in landlock.h
+  // It contains access rights bitmask & a file descriptor.
   struct landlock_path_beneath_attr path_beneath = {
       .parent_fd = -1,
   };
@@ -93,13 +95,19 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
     fprintf(stderr, "Missing environment variable %s\n", env_var);
     return 1;
   }
+
+  // INFO: getenv returns a pointer to the environment variable, so we need to
+  // copy here
   env_path_name = strdup(env_path_name);
   if (!env_path_name) {
-    fprintf(stderr, "Could not allocat memory for %s\n", env_var);
+    fprintf(stderr, "Could not allocate memory for %s\n", env_var);
     return 1;
   }
 
+  // WARNING: this unsets the env after using, probably to prevent the
+  // program from being able to read the paths after the ruleset is read.
   unsetenv(env_var);
+
   num_paths = parse_path(env_path_name, &path_list);
   if (num_paths == 1 && path_list[0][0] == '\0') {
     // INFO: we just return if the ruleset is empty. It's not an error.
@@ -115,7 +123,7 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
     if (path_beneath.parent_fd < 0) {
       // INFO: then again this fails if a single path doesn't exist
       // The open syscall with O_PATH needs x persmissions on the whole path to
-      // traverse the directory. We should abourt on ENOENT, but maybe not on
+      // traverse the directory. We should abort on ENOENT, but maybe not on
       // EACCES, since an access would be denied anyway; landlock permissions
       // set or not.
       fprintf(stderr, "Failed to open \"%s\": %s\n", path_list[i],
@@ -129,7 +137,7 @@ static int populate_ruleset_fs(const char *const env_var, const int ruleset_fd,
     path_beneath.allowed_access = allowed_access;
 
     // INFO: Only set flags related to files if the path is a file, everything
-    // else is set to 0
+    // else is set to 0. &= sets the bytes to 1 that are set in both bitmasks.
     if (!S_ISDIR(statbuf.st_mode))
       path_beneath.allowed_access &= ACCESS_FILE;
     if (landlock_add_rule(ruleset_fd, LANDLOCK_RULE_PATH_BENEATH, &path_beneath,
@@ -348,6 +356,9 @@ int main(const int argc, char *const argv[], char *const *const envp) {
     goto err_close_ruleset;
   }
 
+  // INFO: we try to prevent the process from gaining privs (eg. with SUID) in
+  // the future. PR_SET_NO_NEW_PRIVS is required to be set before
+  // landlock_restrict_self
   if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)) {
     perror("Failed to restrict privileges");
     goto err_close_ruleset;
@@ -363,9 +374,11 @@ int main(const int argc, char *const argv[], char *const *const envp) {
   // We could
   // - always retain read access to /lib /bin /usr and /etc
   // - always retain write access to /tmp, /proc
-  // - retain read access to CWD. Maybe even write access?
+  // - retain read & write access to CWD.
+  // INFO: it's not easy to auto-detect neccessary paths for an executable. We
+  // could:
   // - always retain read access to the $PATH directories OR
-  // - try to get the PATH of the currently executed process with `which`
+  // - try to get the PATH of the desired process with `which`
   // - try to keep default profiles for different executables
   cmd_path = argv[1];
   cmd_argv = argv + 1;

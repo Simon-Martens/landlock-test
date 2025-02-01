@@ -1,3 +1,5 @@
+// INFO: this wrapper is only neeeded when using a libc version that does not
+// implement the landlock interface
 #ifndef LANDLOCK_WRAPPERS_H
 #define LANDLOCK_WRAPPERS_H
 
